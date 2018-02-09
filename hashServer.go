@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"log"
 	"net/http"
+	"time"
 )
 
 type hashReq struct {
@@ -23,12 +24,13 @@ func processHashRequest(w http.ResponseWriter, r *http.Request) {
 	//get string from request
 	r.ParseForm()
 	hash := getHash(r.Form.Get("password"))
+	//per requirements..stall for 5 seconds
+	time.Sleep(5 * time.Second)
 	w.Write([]byte(hash))
 
 }
 
 func main() {
-	// bind := flag.Int("bind", 8000, "port to serve")
 	http.HandleFunc("/hash", processHashRequest)
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
