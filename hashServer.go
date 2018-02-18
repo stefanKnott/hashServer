@@ -9,8 +9,14 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 )
+
+type hashObj struct {
+	code uint32
+	hash string
+}
 
 type statistics struct {
 	Total             int `json:"total"`
@@ -19,11 +25,13 @@ type statistics struct {
 }
 
 type env struct {
-	requestStatus chan string       //used for tracking open requests
+	requestStatus chan string //used for tracking open requests
+	hashChan      chan hashObj
 	idPwHashTable map[uint32]string //id:password hash table
 	shutdown      bool
 	remaining     int
 	Stats         statistics
+	lock          *sync.Mutex
 }
 
 const (
@@ -33,8 +41,6 @@ const (
 	FINISHED string = "FINSIHED"
 	SHUTDOWN string = "SHUTDOWN"
 )
-
-//solution for handle rest of requests on shutdown could include a buffered channel
 
 func getHash(password string) string {
 	hasher := sha512.New()
@@ -49,12 +55,22 @@ func calculateaverageDurationMs(count int, totalDuration time.Duration) float32 
 	return float32(totalDuration.Nanoseconds()) / float32(1000000) / float32(count)
 }
 
+//set hashtable information after a 5s delay
+func (env *env) processHashSets() {
+	for hashObj := range env.hashChan {
+		time.Sleep(5 * time.Second)
+		env.lock.Lock()
+		env.idPwHashTable[hashObj.code] = hashObj.hash
+		env.lock.Unlock()
+	}
+}
+
+//process requests to our /hash/ API
 func (env *env) processHashRequest(w http.ResponseWriter, r *http.Request) {
 	env.requestStatus <- PROCESS
 	var hash string
 	var hashCode uint32
 
-	env.Stats.Total++
 	start := time.Now()
 	switch r.Method {
 	case GET:
@@ -63,15 +79,15 @@ func (env *env) processHashRequest(w http.ResponseWriter, r *http.Request) {
 			//write invalid to requester
 			w.WriteHeader(http.StatusNotImplemented)
 		}
-		//get the hash password
+		//get the hash password & write back to client
+		env.lock.Lock()
 		w.Write([]byte(env.idPwHashTable[uint32(id)]))
-		return
+		env.lock.Unlock()
 	case POST:
 		//get string from request
 		r.ParseForm()
 		hash = getHash(r.Form.Get("password"))
 		hashCode = getHashCode(hash)
-
 		str := strconv.Itoa(int(hashCode))
 		w.Write([]byte(str))
 	default:
@@ -80,12 +96,17 @@ func (env *env) processHashRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	env.requestStatus <- FINISHED
+
+	//check to ensure we are setting hash
+	if hash != "" {
+		env.hashChan <- hashObj{code: hashCode, hash: hash}
+	}
+
+	env.lock.Lock()
+	env.Stats.Total++
 	env.Stats.totalDuration += time.Since(start)
 	env.Stats.AverageDurationMs = calculateaverageDurationMs(env.Stats.Total, env.Stats.totalDuration)
-
-	//per requirements..stall for 5 seconds
-	time.Sleep(5 * time.Second)
-	env.idPwHashTable[hashCode] = hash
+	env.lock.Unlock()
 }
 
 func getHashCode(s string) uint32 {
@@ -137,13 +158,15 @@ func (env *env) processStatsRequest(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	env := new(env)
+	env.lock = new(sync.Mutex)
 	//buffer 100 requests, should be plenty for simple hash
 	env.requestStatus = make(chan string, 100)
+	env.hashChan = make(chan hashObj, 10)
 	env.idPwHashTable = make(map[uint32]string)
 	http.HandleFunc("/hash/", env.processHashRequest)
 	http.HandleFunc("/shutdown/", env.processShutdownRequest)
 	http.HandleFunc("/stats/", env.processStatsRequest)
-	// http.HandleFunc("/hashID", env.processHashRequestByID)
+	go env.processHashSets()
 	go env.graceful()
 	log.Println("Server listeniing for requests on 8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))
