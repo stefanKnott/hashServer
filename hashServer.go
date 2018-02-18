@@ -4,6 +4,7 @@ import (
 	"crypto/sha512"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"hash/fnv"
 	"log"
 	"net/http"
@@ -157,6 +158,20 @@ func (env *env) processStatsRequest(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	var portStr string
+	if len(os.Args) > 1 {
+		portStr = os.Args[1]
+	}
+	if portStr == "" {
+		portStr = "8080"
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		panic(err)
+	}
+	if port < 1 || port > 65535 {
+		panic("Please provide a valid port in the range 1:65535")
+	}
 	env := new(env)
 	env.lock = new(sync.Mutex)
 	//buffer 100 requests, should be plenty for simple hash
@@ -168,6 +183,6 @@ func main() {
 	http.HandleFunc("/stats/", env.processStatsRequest)
 	go env.processHashSets()
 	go env.graceful()
-	log.Println("Server listeniing for requests on 8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	log.Printf("Server listeniing for requests on: %v\n", port)
+	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%v", port), nil))
 }
